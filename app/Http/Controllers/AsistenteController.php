@@ -78,6 +78,77 @@ class AsistenteController extends Controller
         $mensagem = trim($request->input('mensagem', ''));
 
         info("💬 Texto recebido: {$mensagem}");
+        // ---------------------------------------------
+        // ❗ FILTRO DE PERGUNTAS CONCEITUAIS
+        // Apenas explicações → NÃO usa banco/TRGM
+        // ---------------------------------------------
+        $textoLower = mb_strtolower($mensagem, 'UTF-8');
+
+        $conceituais = [
+            // Conceitos diretos
+            'o que e', 'o que é',
+            'como funciona',
+            'como se faz',
+            'para que serve',
+            'qual a diferenca', 'qual a diferença',
+            'diferenca entre', 'diferença entre',
+            'defina', 'definição',
+            'explique', 'explica',
+
+            // Perguntas de uso e comportamento
+            'posso tomar sozinho',
+            'pode tomar sozinho',
+            'fica bom sozinho',
+            'é bom sozinho',
+            'combina com',
+            'vai bem com',
+            'devo servir',
+            'como servir',
+            'como tomar',
+            'como beber',
+            'misturar com',
+            'posso misturar',
+            'mistura com',
+            'acompanha',
+            'harmoniza',
+            'combinação',
+            'combina com',
+
+            // Perguntas sobre intensidade
+            'é forte',
+            'é leve',
+            'é doce',
+            'é seco',
+
+            // Perguntas gerais de recomendação não ligadas ao banco
+            'para relaxar',
+            'para jantar',
+            'para almoço',
+            'pra almocar',
+            'pra jantar',
+        ];
+
+        // se for pergunta conceitual → resposta direto pela IA
+        foreach ($conceituais as $padrao) {
+            if (str_contains($textoLower, $padrao)) {
+
+                info("🧠 Pergunta conceitual detectada → enviando direto para IA");
+
+                // IA gera texto direto (sem banco)
+                $respostaTexto = $openai->gerarTexto(
+                    "Responda como Sommelier Mapy: profissional, educado e simples.\nPergunta do cliente: {$mensagem}\nExplique de forma breve, clara e amigável."
+                );
+
+                // gera áudio normalmente
+                $audioUrl = $openai->gerarAudio($respostaTexto);
+
+                return response()->json([
+                    'resposta'  => $respostaTexto,
+                    'audio_url' => $audioUrl,
+                    'modo'      => 'texto',
+                ]);
+            }
+        }
 
         try {
             $respostaTexto = $sommelier->responder($mensagem);

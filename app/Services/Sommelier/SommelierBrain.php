@@ -6,7 +6,7 @@ use App\Services\Sommelier\Buscador;
 use App\Services\Sommelier\Intencoes;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Session;
-use Illuminate\Support\Facades\Log;
+use App\Helpers\SommelierLog;
 use App\Services\OpenAIService;
 use Throwable;
 
@@ -17,6 +17,7 @@ class SommelierBrain
     public function __construct(OpenAIService $openai)
     {
         $this->openai = $openai;
+        SommelierLog::info("🧠 SommelierBrain iniciado.");
     }
 
     /**
@@ -26,191 +27,254 @@ class SommelierBrain
      */
     public function responder(string $mensagem): string
     {
+        SommelierLog::info("📥 Entrada do cliente: {$mensagem}");
+
         $mensagem = trim($mensagem);
 
         if ($mensagem === '') {
-            return 'Poderia reformular, por gentileza? Não consegui compreender sua pergunta.';
+            SommelierLog::info("⚠️ Mensagem vazia.");
+            return 'Poderia reformular, por gentileza?';
+        }
+
+        // =========================================================
+        // 🔧 NORMALIZAÇÃO IA
+        // =========================================================
+        try {
+            SommelierLog::info("🔧 normalizeQuery() — entrada: {$mensagem}");
+            $mensagemNormalizada = $this->openai->normalizeQuery($mensagem);
+
+            SommelierLog::info("🔧 normalizeQuery() — saída: {$mensagemNormalizada}");
+
+            if ($mensagemNormalizada && is_string($mensagemNormalizada)) {
+
+                // 🚫 Se a IA devolveu uma mensagem genérica de erro/orientação,
+                // NÃO vamos substituir a pergunta original do cliente.
+                $saidaLower = mb_strtolower($mensagemNormalizada, 'UTF-8');
+
+                if (
+                    str_contains($saidaLower, 'não há informações suficientes') ||
+                    str_contains($saidaLower, 'nao ha informacoes suficientes') ||
+                    str_contains($saidaLower, 'por favor, forneça detalhes') ||
+                    str_contains($saidaLower, 'por favor, forneca detalhes')
+                ) {
+                    SommelierLog::info("⚠️ normalizeQuery retornou mensagem genérica — mantendo texto original do cliente.");
+                } else {
+                    $mensagem = $mensagemNormalizada;
+                }
+            }
+
+        } catch (Throwable $e) {
+            SommelierLog::error("❌ Erro normalizeQuery(): {$e->getMessage()}");
         }
 
         $textoOriginal = $mensagem;
         $textoLower    = mb_strtolower($mensagem, 'UTF-8');
 
-        // ---------------------------------------
-        // 🔁 RESET DA CONVERSA
-        // ---------------------------------------
-        if (preg_match('/\b(nova conversa|novo atendimento|reset|recomeçar|recomecar|limpar)\b/iu', $textoLower)) {
+        // =========================================================
+        // 🔁 RESET
+        // =========================================================
+        if (preg_match('/\b(nova conversa|reset|recomeçar|limpar)/iu', $textoLower)) {
+            SommelierLog::info("🔄 Reset de conversa solicitado.");
             Session::forget('historico_mapy');
             Session::forget('cumprimentou');
-
             return $this->saudacaoInicial(true);
         }
 
-        // 🧠 APRENDIZADO AUTOMÁTICO (palavras + preferências)
-        $this->treinarAprendizado($textoOriginal);
-        $this->registrarAprendizado($textoOriginal);
+        // =========================================================
+        // 👋 CUMPRIMENTO SIMPLES
+        // =========================================================
+        if ($this->ehCumprimentoSimples($textoOriginal)) {
+            SommelierLog::info("👋 Cumprimento simples detectado.");
+            Session::put('cumprimentou', true);
+            return "Claro! Como posso te ajudar com as bebidas hoje? 🍷";
+        }
 
-        // 👋 Saudação (apenas 1x por sessão)
         $cumprimento = $this->saudacaoInicial();
 
-        // 🧠 HISTÓRICO CURTO (para IA fallback)
         $historico = session('historico_mapy', []);
         $contexto  = collect($historico)
             ->take(-5)
             ->map(fn ($m) => "Cliente: {$m['cliente']} | Sommelier: {$m['assistente']}")
             ->join("\n");
 
-        $resposta   = null;
-        $origem     = 'conversa'; // intencao | busca_banco | ia | conversa
-        $usouBanco  = false;
+        $origem    = 'conversa';
+        $resposta  = null;
+        $usouBanco = false;
 
-        // =======================================================
-        // 1) ⚡ INTENÇÕES RÁPIDAS  (sem gastar IA pesada)
-        // =======================================================
+        // ===========================================================
+        // 1) 🧠 INTENÇÕES DETECTADAS
+        // ===========================================================
         try {
             $int = Intencoes::processar($textoOriginal);
+            
+            // ===========================================================
+            // 🆕 0) PERGUNTA ESPECÍFICA SOBRE PROCEDÊNCIA / ORIGEM
+            // ===========================================================
+            if (!empty($int['perguntaEspecifica']) && !empty($int['produtoDetectado'])) {
 
+            $p = $int['produtoDetectado'];
+
+            SommelierLog::info("🗂️ Pergunta específica detectada: {$int['perguntaEspecifica']}");
+
+            // 1) PRIMEIRO tenta responder com dados do banco
+            $pais = $p['pais_origem'] ?? null;
+
+            if ($pais) {
+                $msg = "O {$p['nome_limpo']} é produzido em {$pais}.";
+                SommelierLog::info("📌 Resposta de procedência pelo banco: {$msg}");
+                return $msg;
+            }
+
+            // 2) SE NÃO TIVER DADOS NO BANCO → IA INVESTIGA
+            try {
+                $perguntaIA = "Explique em 2 frases a origem e o país de fabricação da bebida '{$p['nome_limpo']}' (marca: {$p['marca']}). Seja direto.";
+
+                SommelierLog::info("🔍 Chamando IA para responder sobre origem: {$perguntaIA}");
+
+                $respIA = $this->openai->responderSimples($perguntaIA);
+
+                if ($respIA) {
+                    SommelierLog::info("🤖 IA respondeu procedência: {$respIA}");
+                    return $respIA;
+                }
+
+            } catch (\Throwable $e) {
+                SommelierLog::error("❌ Erro IA origem: " . $e->getMessage());
+            }
+
+            // 3) FALLBACK FINAL
+            return "O {$p['nome_limpo']} não possui informações de origem cadastradas.";
+        }
+
+
+            // normalização faixa
+            if (
+                $int['precoMin'] !== null &&
+                $int['precoMax'] !== null &&
+                $int['precoMin'] > $int['precoMax']
+            ) {
+                SommelierLog::info("🔄 Corrigindo faixa de preço invertida.");
+                [$int['precoMin'], $int['precoMax']] = [$int['precoMax'], $int['precoMin']];
+            }
+
+            // se tem intenção → usar módulo de intenções
             if (
                 !empty($int['categoria']) ||
                 !empty($int['marca'])     ||
                 !empty($int['sensorial']) ||
                 $int['precoMin'] !== null ||
-                $int['precoMax'] !== null
+                $int['precoMax'] !== null ||
+                $int['minMl']   !== null  ||
+                $int['maxMl']   !== null
             ) {
-                // Gera resposta via busca combinada no banco
+                SommelierLog::info("🚀 Executando busca por intenções…");
+
                 $resPorIntencao = Buscador::buscarPorIntencoes($int, $textoOriginal);
 
                 if (!empty($resPorIntencao)) {
-                    $resposta  = $resPorIntencao;
                     $origem    = 'intencao';
                     $usouBanco = true;
+
+                    SommelierLog::info("🎯 Resultado bruto intenções:\n" . json_encode($resPorIntencao, JSON_PRETTY_PRINT));
+
+                    // IA para formatar as opções
+                    try {
+                        if (is_array($resPorIntencao) && !empty($resPorIntencao['opcoes'])) {
+                            $respostaIA = $this->openai->responderComOpcoes($textoOriginal, $resPorIntencao['opcoes']);
+                            SommelierLog::info("🤖 IA formatou opções.");
+
+                            $resposta = $respostaIA ?: $resPorIntencao['texto_bruto'];
+                        } else {
+                            $resposta = $resPorIntencao;
+                        }
+                    } catch (\Throwable $e) {
+                        SommelierLog::error("❌ Erro responderComOpcoes(): {$e->getMessage()}");
+                        $resposta = is_string($resPorIntencao) ? $resPorIntencao : null;
+                    }
                 }
             }
-
         } catch (Throwable $e) {
-            Log::error('⚠️ Erro ao processar intenções rápidas: ' . $e->getMessage());
+            SommelierLog::error("❌ Erro intenções: {$e->getMessage()}");
         }
 
-        // =======================================================
-        // 2) 🔍 BUSCA DIRETA NO BANCO (TRGM + índices otimizados)
-        // =======================================================
+        // ===========================================================
+        // 2) 🔎 BUSCA DIRETA
+        // ===========================================================
         if (!$resposta) {
+            SommelierLog::info("🔎 Caixa rápida — TRGM Buscador::buscar()");
             try {
-                $resBusca = Buscador::buscar($textoOriginal);
+                $resultadoBanco = Buscador::buscar($textoOriginal);
 
-                if (!empty($resBusca)) {
-                    $resposta  = $resBusca;
+                if ($resultadoBanco) {
+                    SommelierLog::info("📦 Resultado TRGM encontrado.");
+                    $resposta  = $resultadoBanco;
                     $origem    = 'busca_banco';
                     $usouBanco = true;
                 }
             } catch (Throwable $e) {
-                Log::error('⚠️ Erro no Buscador (banco de dados): ' . $e->getMessage());
+                SommelierLog::error("❌ Erro Buscador (banco): {$e->getMessage()}");
             }
         }
 
-        // =======================================================
-        // 3) 🤖 FALLBACK IA (quando DB + intenções não resolvem)
-        //     — OpenAIService deve estar configurado para responder SEMPRE em português
-        // =======================================================
-        if (!$resposta) {
+        // ===========================================================
+        // 3) 🤖 FALLBACK IA
+        // ===========================================================
+        if (!$resposta && !$this->pedidoEstritamenteDeProduto($textoLower)) {
+            SommelierLog::info("🤖 Fallback IA ativado.");
             try {
                 $resIA = $this->openai->responder($textoOriginal, $contexto);
-
-                // 🔒 Bloqueia respostas fora do nicho de bebidas
-                if ($resIA && preg_match('/(remédio|medicamento|celular|roupa|notebook|curso)/iu', $resIA)) {
-                    $resIA = null;
-                }
-
-                if (!empty($resIA)) {
-                    $resposta = $resIA;
-                    $origem   = 'ia';
-                }
+                SommelierLog::info("🤖 IA respondeu (fallback).");
+                $resposta = $resIA;
+                $origem   = 'ia';
             } catch (Throwable $e) {
-                Log::error('⚠️ Erro OpenAI: ' . $e->getMessage());
+                SommelierLog::error("❌ Erro IA fallback: {$e->getMessage()}");
             }
         }
 
-        // =======================================================
-        // 4) 🧷 FALLBACK FINAL (nenhuma fonte respondeu)
-        // =======================================================
+        // ===========================================================
+        // 4) ⚠️ NADA ENCONTRADO
+        // ===========================================================
         if (!$resposta) {
-            $preferencias = DB::table('memoria_aprendizado')
-                ->where('tipo', 'preferencia')
-                ->orderByDesc('contador')
-                ->limit(5)
-                ->pluck('dado')
-                ->toArray();
-
-            if (!empty($preferencias)) {
-                $lista    = implode(', ', $preferencias);
-                $resposta = "Ainda não consegui identificar exatamente o que você procura, mas muitos clientes gostam de bebidas como: {$lista}. Posso sugerir alguma delas?";
-            } else {
-                $resposta = "Poderia me dizer se prefere algo doce, leve, encorpado ou mais forte? Assim consigo te indicar a bebida perfeita.";
-            }
-
-            $origem = 'conversa';
+            SommelierLog::info("⚠️ Nenhum módulo identificou resposta.");
+            $resposta = "Poderia me dizer se prefere algo doce, leve, encorpado ou mais forte?";
         }
 
-        // =======================================================
-        // 5) 💾 HISTÓRICO CURTO NA SESSÃO (sempre como string)
-        // =======================================================
-        $respString = is_string($resposta)
-            ? $resposta
-            : json_encode($resposta, JSON_UNESCAPED_UNICODE);
+        // Histórico curto
+        $respString = is_string($resposta) ? $resposta : json_encode($resposta);
 
-        $historico[] = [
-            'cliente'    => $textoOriginal,
-            'assistente' => mb_substr($respString, 0, 200),
-            'momento'    => now()->toDateTimeString(),
-        ];
-
-        session(['historico_mapy' => array_slice($historico, -5)]);
-
-        // =======================================================
-        // 6) 🗄️ LOG EM BANCO (interacoes_clientes) — STRING!
-        // =======================================================
-        try {
-            DB::table('interacoes_clientes')->insert([
-                'tipo'       => $usouBanco ? 'busca_banco' : 'conversa',
-                'entrada'    => $textoOriginal,
-                'resposta'   => $respString,
-                'created_at' => now(),
-                'updated_at' => now(),
-            ]);
-        } catch (Throwable $e) {
-            Log::error('⚠️ Erro ao registrar interação no banco: ' . $e->getMessage());
-        }
-
-        // =======================================================
-        // 7) SAUDAÇÃO x RESPOSTA
-        //    - se usuário só disse “oi / bom dia”, não anexa saudação longa
-        // =======================================================
-        if ($this->ehCumprimentoSimples($textoOriginal)) {
-            Session::put('cumprimentou', true);
-            return trim($respString);
-        }
+        // remover saudações desnecessárias
+        $respString = preg_replace('/^(oi|ola|olá|bom dia|boa tarde|boa noite)[^.!?]*\s*/iu', '', $respString);
 
         $final = $cumprimento
             ? "{$cumprimento} {$respString}"
             : $respString;
 
-        Log::info('✅ SommelierBrain respondeu (origem=' . $origem . ')');
+        SommelierLog::info("✅ RESPOSTA FINAL ({$origem}):\n{$final}");
 
         return trim($final);
     }
 
+
     /**
-     * Verifica se a mensagem é apenas um cumprimento simples
+     * ===================================================
+     * Agora apenas reconhece CUMPRIMENTOS EXATOS
+     * ===================================================
      */
     protected function ehCumprimentoSimples(string $texto): bool
     {
-        return preg_match(
-            '/^(oi|ola|olá|oie|oii+|bom dia|boa tarde|boa noite|tudo bem)$/iu',
-            trim($texto)
-        ) === 1;
+        $texto = trim(mb_strtolower($texto));
+
+        $lista = [
+            'oi', 'olá', 'ola', 'oie',
+            'bom dia', 'boa tarde', 'boa noite',
+            'tudo bem'
+        ];
+
+        return in_array($texto, $lista, true);
     }
 
     /**
-     * 👋 Saudação inicial automática (sempre em português)
+     * 👋 Saudação inicial automática
      */
     protected function saudacaoInicial(bool $forcar = false): ?string
     {
@@ -233,10 +297,6 @@ class SommelierBrain
 
     /**
      * 🧠 APRENDIZADO AUTOMÁTICO FORTE (palavras soltas)
-     *
-     * - Aprende novas palavras
-     * - Reforça padrões
-     * - Cria alias automaticamente
      */
     protected function treinarAprendizado(string $textoOriginal): void
     {
@@ -273,7 +333,6 @@ class SommelierBrain
                 continue;
             }
 
-            // REFORÇO DE MEMÓRIA
             $row = DB::table('memoria_aprendizado')
                 ->where('dado', $p)
                 ->first();
@@ -286,7 +345,6 @@ class SommelierBrain
                         'updated_at' => now(),
                     ]);
 
-                // ❗ PROMOÇÃO AUTOMÁTICA (vira alias global)
                 if ($row->contador + 1 >= 3) {
                     DB::table('sommelier_alias_global')
                         ->updateOrInsert(
@@ -301,7 +359,6 @@ class SommelierBrain
                 continue;
             }
 
-            // MEMÓRIA NOVA
             DB::table('memoria_aprendizado')->insert([
                 'tipo'       => 'palavra',
                 'dado'       => $p,
@@ -368,38 +425,59 @@ class SommelierBrain
     }
 
     /**
-     * 🗣️ FORMATA PREÇO PARA TTS (texto falado)
+     * 🗣️ FORMATA PREÇO PARA TTS
      */
     protected function formatarPrecoVoz(float $preco): string
     {
         $preco = round($preco, 2);
 
-        $d = floor($preco);                    // parte inteira
-        $c = (int) round(($preco - $d) * 100); // centavos
+        $d = floor($preco);
+        $c = (int) round(($preco - $d) * 100);
 
         $fmt = new \NumberFormatter('pt_BR', \NumberFormatter::SPELLOUT);
 
-        // 0.xx → apenas centavos
         if ($d == 0 && $c > 0) {
             return $fmt->format($c) . ' centavos';
         }
 
-        // 1.00 → exatamente um dólar
         if ($d == 1 && $c == 0) {
             return 'um dólar';
         }
 
-        // X.00 → dólares exatos
         if ($d > 1 && $c == 0) {
             return $fmt->format($d) . ' dólares';
         }
 
-        // X.YY → dólares + centavos
         if ($d > 0 && $c > 0) {
             return $fmt->format($d) . ' dólares e ' . $fmt->format($c) . ' centavos';
         }
 
-        // Fallback
         return $fmt->format($d) . ' dólares';
+    }
+
+    /**
+     * 🔒 Detecta pedidos REAIS de produto
+     */
+    protected function pedidoEstritamenteDeProduto(string $t): bool
+    {
+        $t = mb_strtolower($t, 'UTF-8');
+
+        if (preg_match('/\d+\s*ml|\d+\s*l/i', $t)) {
+            return true;
+        }
+
+        if (preg_match('/acima|maior que|menor que|ate|até|entre/i', $t)) {
+            return true;
+        }
+
+        if (preg_match('/\d+(,|\.)?\d*\s*(usd|dolar|dólar)/i', $t)) {
+            return true;
+        }
+
+        if (preg_match('/whisky|whiskey|vinho|vino|vodka|gin|licor|cachac|cerveja|espumante|champagne/i', $t)) {
+            return true;
+        }
+
+        return false;
     }
 }

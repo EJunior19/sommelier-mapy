@@ -3,12 +3,11 @@
 namespace App\Services;
 
 use OpenAI;
-use Illuminate\Support\Facades\Log;
 use Throwable;
+use App\Helpers\SommelierLog;
 
 class OpenAIService
 {
-    /** @var \OpenAI\Client|null */
     private ?\OpenAI\Client $client = null;
     private ?string $apiKey = null;
     private ?string $projectId = null;
@@ -17,7 +16,6 @@ class OpenAIService
 
     public function __construct()
     {
-        // 🧠 Singleton simples para evitar recriar client a cada request
         if (self::$instanciaUnica instanceof self) {
             $this->client    = self::$instanciaUnica->client;
             $this->apiKey    = self::$instanciaUnica->apiKey;
@@ -30,7 +28,7 @@ class OpenAIService
             $this->projectId = config('services.openai.project');
 
             if (empty($this->apiKey)) {
-                Log::error('❌ OpenAIService: API key não configurada em services.openai.key');
+                SommelierLog::error('❌ OpenAIService: API key não configurada.');
                 return;
             }
 
@@ -39,7 +37,6 @@ class OpenAIService
                 'Content-Type'  => 'application/json',
             ];
 
-            // Para chaves de projeto (sk-proj-...), adiciona o cabeçalho de projeto
             if (str_starts_with($this->apiKey, 'sk-proj-') && !empty($this->projectId)) {
                 $headers['OpenAI-Project'] = $this->projectId;
             }
@@ -52,51 +49,56 @@ class OpenAIService
                 ->make();
 
             self::$instanciaUnica = $this;
-            Log::info('🔥 OpenAIService inicializado (instância única).');
+            SommelierLog::info('🔥 OpenAIService inicializado.');
         } catch (Throwable $e) {
-            Log::error('❌ Erro ao inicializar OpenAIService: ' . $e->getMessage());
+            SommelierLog::error('❌ Erro ao inicializar OpenAIService: ' . $e->getMessage());
             $this->client = null;
         }
     }
 
-    /**
-     * 🧠 IA — Resposta textual genérica (fallback de conversa)
-     *
-     * → NÃO pode inventar produtos, marcas, preços ou volumes.
-     * → NÃO pode repetir a saudação longa do Shopping Mapy.
-     */
+    # ============================================================
+    #  🔥  SANITIZAÇÃO UNIVERSAL (ANTI JSON-BUG / ANTI ASPAS)
+    # ============================================================
+    private function sanitizarResposta(?string $txt): ?string
+    {
+        if (!$txt) return null;
+
+        $txt = str_replace(["\n", "\r"], " ", $txt);
+        $txt = trim($txt, "\"' ");
+        $txt = str_replace(['{', '}', '[', ']'], '', $txt);
+        $txt = preg_replace('/\s+/', ' ', $txt);
+
+        return trim($txt);
+    }
+
+    # ============================================================
+    #  🧠  IA — Conversa Geral
+    # ============================================================
     public function responder(string $mensagem, ?string $contexto = null): ?string
     {
-        if (!$this->client) {
-            return null;
-        }
+        if (!$this->client) return null;
 
         $mensagem = trim($mensagem);
-        if ($mensagem === '') {
-            return null;
-        }
+        if ($mensagem === '') return null;
+
+        SommelierLog::info('💬 IA responder() — entrada', ['texto' => $mensagem]);
 
         try {
-            // ---------------------------------
-            // 🔎 Histórico recente da sessão
-            // ---------------------------------
             $historico = session('historico_mapy', []);
 
-            // Máx. 8 interações curtas pra economizar tokens
             $historicoTexto = collect($historico)
                 ->take(-8)
-                ->filter(function ($m) {
-                    // remove saudações longas do assistente
-                    return !preg_match('/Bem-vindo ao Shopping Mapy/i', $m['assistente'])
-                        && !preg_match('/Ótima tarde|Ótimo dia|Ótima noite/i', $m['assistente']);
-                })
-                ->map(function ($m) {
-                    return "Cliente: {$m['cliente']}\nSommelier: {$m['assistente']}";
-                })
+                ->filter(fn($m) =>
+                    !preg_match('/Bem-vindo ao Shopping Mapy/i', $m['assistente']) &&
+                    !preg_match('/Ótima (tarde|noite|dia)/i', $m['assistente'])
+                )
+                ->map(fn($m) =>
+                    "Cliente: {$m['cliente']}\nSommelier: {$m['assistente']}"
+                )
                 ->join("\n\n");
 
             if ($contexto) {
-                $historicoTexto .= "\n\nContexto adicional:\n" . $contexto;
+                $historicoTexto .= "\n\n" . $contexto;
             }
 
             $response = $this->client->chat()->create([
@@ -105,295 +107,215 @@ class OpenAIService
                 'max_tokens'  => 450,
                 'messages'    => [
                     [
-                        'role'    => 'system',
+                        'role' => 'system',
                         'content' => <<<SYS
-Você é a **Sommelier Virtual do Shopping Mapy**, especialista em bebidas alcoólicas e não alcoólicas.
+Você é a Sommelier Virtual do Shopping Mapy.
 
-REGRAS CRÍTICAS (NÃO QUEBRAR):
-- Nunca invente produtos, marcas, rótulos, volumes ou preços.
-- Se não souber o nome exato de uma bebida, peça para o cliente repetir ou descrevê-la melhor.
-- Se precisar citar uma bebida, faça isso de forma genérica (ex.: "um vinho tinto suave", "um espumante doce"), sem inventar rótulos.
-- Não recomende remédios, suplementos, cigarros, aparelhos eletrônicos, roupas ou qualquer coisa fora de bebidas.
-- Se a pergunta não for sobre bebidas, responda gentilmente que seu foco é apenas bebidas.
-
-SAUDAÇÕES:
-- Você **NUNCA** deve gerar a saudação padrão do Shopping Mapy
-  (por exemplo: "Ótimo dia ☀️! Bem-vindo ao Shopping Mapy..." ou variações).
-- Quando o cliente disser "bom dia / boa tarde / boa noite / oi / tudo bem", responda apenas com algo curto, natural:
-  - Ex: "Tudo ótimo! Como posso te ajudar com as bebidas?"
-  - Ex: "Oi! Me conta o que você está procurando para beber."
-- Não escreva "Bem-vindo ao Shopping Mapy" em nenhuma resposta (isso já é feito pelo sistema externo).
-
-ESTILO:
-- Tom próximo, simpático, educado, como um atendente humano.
-- Respostas curtas e diretas (geralmente 1–2 parágrafos).
-- Pode usar no máximo 2 emojis, e apenas se fizer sentido.
-- Ajude o cliente a decidir, fazendo perguntas simples quando necessário (doce, seco, forte, ocasião, faixa de preço).
-
-IDIOMA:
-- Se o cliente escrever em português, responda em português.
-- Se escrever em espanhol, responda em espanhol.
-- Nunca misture muitos idiomas na mesma frase.
-
-HISTÓRICO (apenas contexto, NÃO responder sobre isso diretamente):
-{$historicoTexto}
+REGRAS:
+- Nunca invente bebidas, marcas, volumes ou preços.
+- Se não souber, peça detalhes.
+- Responda curto, humano, simpático.
+- Máximo 2 emojis.
+- Nunca gere a saudação padrão do Shopping Mapy.
+- Idioma conforme cliente (PT/ES).
 SYS
                     ],
-                    [
-                        'role'    => 'user',
-                        'content' => $mensagem,
-                    ],
+                    ['role' => 'user', 'content' => $mensagem],
                 ],
             ]);
 
-            $texto = trim($response->choices[0]->message->content ?? '');
+            $texto = $response->choices[0]->message->content ?? null;
+            $texto = $this->sanitizarResposta($texto);
 
-            if ($texto === '') {
-                return null;
-            }
+            SommelierLog::info('🤖 IA responder() — saída', ['resposta' => $texto]);
 
             return $texto;
+
         } catch (Throwable $e) {
-            Log::error('❌ Erro em responder(): ' . $e->getMessage());
+            SommelierLog::error('❌ Erro em responder(): ' . $e->getMessage());
             return null;
         }
     }
 
-    /**
-     * 🧠 IA — Resposta usando SOMENTE bebidas vindas do banco
-     *
-     * @param string $mensagemCliente  Texto original do cliente
-     * @param array  $opcoes           Lista de strings já formatadas: "Nome — 750 ML — 30,00 dólares"
-     */
+    # ============================================================
+    #  🔒  IA — Responder Somente com Opções do Banco
+    # ============================================================
     public function responderComOpcoes(string $mensagemCliente, array $opcoes): ?string
     {
-        if (!$this->client) {
-            return null;
-        }
+        if (!$this->client) return null;
+        if (empty($opcoes)) return null;
 
-        if (empty($opcoes)) {
-            return null;
-        }
-
-        // Limita para não gastar tokens demais
         $opcoes = array_slice($opcoes, 0, 8);
 
-        $listaOpcoes = collect($opcoes)
+        SommelierLog::info('🟦 IA responderComOpcoes — entrada', [
+            'pergunta' => $mensagemCliente,
+            'opcoes' => $opcoes
+        ]);
+
+        $lista = collect($opcoes)
             ->values()
-            ->map(fn($txt, $i) => ($i + 1) . ') ' . $txt)
+            ->map(fn($t, $i) => ($i + 1) . ") " . $t)
             ->join("\n");
 
-        $promptUsuario = <<<USER
+        $promptUser = <<<TXT
 O cliente perguntou:
 "{$mensagemCliente}"
 
-Estas são as bebidas disponíveis no estoque (NÃO invente outras):
+Estas bebidas estão disponíveis:
+{$lista}
 
-{$listaOpcoes}
-
-Com base nisso, ajude o cliente a escolher.
-USER;
+Ajude o cliente a escolher a melhor opção.
+TXT;
 
         try {
             $response = $this->client->chat()->create([
-                'model'       => 'gpt-4o-mini',
+                'model' => 'gpt-4o-mini',
                 'temperature' => 0.5,
-                'max_tokens'  => 320,
-                'messages'    => [
+                'max_tokens' => 320,
+                'messages' => [
                     [
-                        'role'    => 'system',
+                        'role' => 'system',
                         'content' => <<<SYS
-Você é a **Sommelier Virtual do Shopping Mapy**.
+Você é a Sommelier Virtual do Shopping Mapy.
 
-REGRAS IMPORTANTES:
-- Só pode recomendar bebidas que apareçam na lista enviada.
-- NÃO invente produtos, marcas, volumes, sabores ou preços.
-- Se a lista não combinar com o pedido, explique isso e sugira o que chega mais perto, sem criar itens novos.
-- Use de 1 a 3 recomendações no máximo.
-- Use justificativas simples: momento (churrasco, presente, família, festa, frio, calor), perfil (doce, seco, leve, forte) e preço.
-- Não fique repetindo a lista inteira se não for necessário.
-- Se o cliente pedir "a mais barata", "a mais cara", "algo em torno de X dólares", baseie-se apenas na lista enviada.
-- Não repita a saudação longa do Shopping Mapy, nem "Bem-vindo ao Shopping Mapy".
-
-ESTILO:
-- Linguagem simples, humana e próxima, como conversa de loja.
-- No máximo 2 parágrafos curtos, sem texto muito longo.
-- Pode usar 1 ou 2 emojis, no máximo.
-- Termine, se fizer sentido, com uma pergunta de continuação (ex.: "Prefere algo mais doce ou mais seco?").
-
-IDIOMA:
-- Se o cliente escreveu em português, responda em português.
-- Se escreveu em espanhol, responda em espanhol.
+REGRAS ABSOLUTAS:
+- Só cite bebidas da lista.
+- Não invente marcas, preços ou volumes.
+- Sempre USD.
+- Máximo 2 emojis.
 SYS
                     ],
-                    [
-                        'role'    => 'user',
-                        'content' => $promptUsuario,
-                    ],
+                    ['role' => 'user', 'content' => $promptUser],
                 ],
             ]);
 
-            $texto = trim($response->choices[0]->message->content ?? '');
+            $txt = $this->sanitizarResposta($response->choices[0]->message->content ?? null);
 
-            if ($texto === '') {
-                return null;
-            }
+            SommelierLog::info('🟩 IA responderComOpcoes — saída', ['resposta' => $txt]);
 
-            return $texto;
+            return $txt;
+
         } catch (Throwable $e) {
-            Log::error('❌ Erro em responderComOpcoes(): ' . $e->getMessage());
+            SommelierLog::error("❌ Erro em responderComOpcoes(): " . $e->getMessage());
             return null;
         }
     }
 
-    /**
-     * 🎤 SPEECH-TO-TEXT — Áudio → Texto
-     */
-    public function audioParaTexto(string $caminhoAudio): ?string
+    # ============================================================
+    #  🎧  SPEECH-TO-TEXT
+    # ============================================================
+    public function audioParaTexto(string $arquivo): ?string
     {
-        if (!$this->client) {
-            return null;
-        }
+        if (!$this->client) return null;
+
+        SommelierLog::info("🎧 Iniciando transcrição", ['arquivo' => $arquivo]);
 
         try {
-            Log::info("🎧 Iniciando transcrição do áudio: {$caminhoAudio}");
-
             $response = $this->client->audio()->transcribe([
                 'model' => 'gpt-4o-mini-transcribe',
-                'file'  => fopen($caminhoAudio, 'r'),
+                'file'  => fopen($arquivo, 'r'),
             ]);
 
-            $texto = trim($response->text ?? '');
+            $txt = $this->sanitizarResposta($response->text ?? null);
 
-            return $texto !== '' ? $texto : null;
+            SommelierLog::info("📄 Transcrição gerada", ['texto' => $txt]);
+
+            return $txt;
+
         } catch (Throwable $e) {
-            Log::error('❌ Erro em audioParaTexto(): ' . $e->getMessage());
+            SommelierLog::error("❌ Erro em audioParaTexto(): " . $e->getMessage());
             return null;
         }
     }
 
-    /**
-     * 🔊 TEXTO → Áudio (TTS)
-     */
-    public function gerarAudio(string $texto): ?string
+    # ============================================================
+    #  🔧  NORMALIZADOR DE CONSULTA
+    # ============================================================
+    public function normalizeQuery(string $texto): ?string
     {
-        if (!$this->client) {
-            return null;
-        }
+        SommelierLog::info("🔧 Normalizador — entrada", ['texto' => $texto]);
+
+        $prompt = <<<PROMPT
+Corrija erros do texto e normalize para busca de bebidas.
+
+REGRAS:
+- Corrigir ortografia.
+- Remover gírias.
+- Manter somente: categoria, marca, volume, faixa de preço.
+- Não inventar nada.
+- Retornar apenas a frase corrigida.
+
+Texto:
+"{$texto}"
+PROMPT;
 
         try {
-            Log::info('🔊 Gerando áudio para texto (orig): ' . mb_substr($texto, 0, 180) . '...');
+            $response = $this->client->chat()->create([
+                'model' => 'gpt-4o-mini',
+                'max_tokens' => 50,
+                'messages' => [
+                    ['role' => 'system', 'content' => 'Você é um normalizador preciso.'],
+                    ['role' => 'user', 'content' => $prompt],
+                ],
+            ]);
 
-            // 1) Limpa para TTS (remove emojis, ajusta pontuação, ml, etc.)
-            $textoLimpo = $this->limparParaTTS($texto);
+            $txt = $this->sanitizarResposta($response->choices[0]->message->content ?? null);
 
-            // 2) Deixa o texto mais natural para leitura em voz alta
-            $textoLimpo = $this->naturalizarParaTTS($textoLimpo);
+            SommelierLog::info("🔧 Normalizador — saída", ['normalizado' => $txt]);
 
-            // 3) Normaliza espaços
-            $textoLimpo = preg_replace('/\s+/', ' ', $textoLimpo);
-            $textoLimpo = trim($textoLimpo);
+            return $txt;
 
-            if ($textoLimpo === '') {
-                return null;
-            }
+        } catch (Throwable $e) {
+            SommelierLog::error("❌ Erro no normalizeQuery(): " . $e->getMessage());
+            return null;
+        }
+    }
 
-            // Força o TTS a falar exclusivamente em português brasileiro
-            $textoPT = "[pt-BR] " . $textoLimpo;
+    # ============================================================
+    #  🔊  TEXTO → ÁUDIO (TTS)
+    # ============================================================
+    public function gerarAudio(string $texto): ?string
+    {
+        if (!$this->client) return null;
 
-            $result = $this->client->audio()->speech([
+        SommelierLog::info("🔊 TTS gerarAudio() — entrada", ['texto' => $texto]);
+
+        try {
+            $texto = $this->sanitizarResposta($texto);
+            if (!$texto) return null;
+
+            $texto = $this->naturalizarParaTTS($texto);
+            $texto = "[pt-BR] " . $texto;
+
+            $audio = $this->client->audio()->speech([
                 'model'  => 'gpt-4o-mini-tts',
                 'voice'  => 'nova',
-                'input'  => $textoPT,
+                'input'  => $texto,
                 'format' => 'mp3',
             ]);
 
+            $file = "voz_" . time() . ".mp3";
+            $path = storage_path("app/public/{$file}");
 
-            $fileName = 'voz_' . time() . '.mp3';
-            $path     = storage_path("app/public/{$fileName}");
+            file_put_contents($path, $audio);
 
-            file_put_contents($path, $result);
+            SommelierLog::info("🔊 TTS gerarAudio() — arquivo gerado", ['arquivo' => $file]);
 
-            return asset("storage/{$fileName}");
+            return asset("storage/{$file}");
+
         } catch (Throwable $e) {
-            Log::error('❌ Erro ao gerar áudio: ' . $e->getMessage());
+            SommelierLog::error("❌ Erro gerarAudio(): " . $e->getMessage());
             return null;
         }
     }
 
-    /**
-     * Deixa o texto mais “humano” para o TTS (pausas, termos, tamanho)
-     */
-    private function naturalizarParaTTS(string $texto): string
+    # ============================================================
+    #  🔉  TTS Helpers
+    # ============================================================
+    private function naturalizarParaTTS(string $t): string
     {
-        // Substitui expressões que soam robóticas
-        $texto = str_ireplace(
-            ['significa que', 'significa', 'versátil', 'versatilidade'],
-            [
-                'quer dizer que',
-                'quer dizer',
-                'que dá para usar de vários jeitos',
-                'que dá para usar em várias situações',
-            ],
-            $texto
-        );
-
-        // Quebra frases muito longas em pedaços menores
-        $partes = preg_split('/(\.|\?|!)/u', $texto);
-        $partes = array_map('trim', $partes);
-        $partes = array_filter($partes);
-
-        $texto = implode('. ', $partes);
-
-        // Evita texto gigante em uma frase só
-        if (strlen($texto) > 260) {
-            $texto = wordwrap($texto, 200, '. ', true);
-        }
-
-        return $texto;
-    }
-
-    /**
-     * Limpa emojis, melhora pontuação e converte unidades para TTS
-     */
-    private function limparParaTTS(string $texto): string
-    {
-        // 1. Remover emojis
-        $texto = $this->removerEmojis($texto);
-
-        // 2. Normalizar espaços
-        $texto = preg_replace('/\s+/', ' ', $texto);
-
-        // 3. Converter marcadores de lista para algo que soe bem
-        $texto = str_replace(['•', '- '], ' - ', $texto);
-
-        // 4. Ajustar pontuação para pausas melhores
-        $texto = preg_replace('/\.\s*/', '. ', $texto);
-        $texto = preg_replace('/,\s*/', ', ', $texto);
-        $texto = preg_replace('/\?/', '? ... ', $texto);
-        $texto = str_replace(['...', '…'], '... ', $texto);
-
-        // 5. Converter "750 ml" para "setecentos e cinquenta mililitros"
-        $texto = preg_replace_callback('/(\d+)\s*ml/i', function ($m) {
-            $fmt = new \NumberFormatter('pt_BR', \NumberFormatter::SPELLOUT);
-            return $fmt->format((int)$m[1]) . ' mililitros';
-        }, $texto);
-
-        // 6. Converter abreviações de moeda
-        $texto = str_ireplace(['U$', 'USD'], 'dólares', $texto);
-
-        return trim($texto);
-    }
-
-    /**
-     * Remove emojis de uma string
-     */
-    private function removerEmojis(string $texto): string
-    {
-        return preg_replace(
-            '/[\x{1F000}-\x{1FAFF}\x{1F300}-\x{1F6FF}\x{1F900}-\x{1F9FF}\x{1F1E0}-\x{1F1FF}\x{2600}-\x{26FF}\x{2700}-\x{27BF}\x{200D}\x{FE0F}]/u',
-            ' ',
-            $texto
-        );
+        $t = str_replace(['•', '*', '_'], ' ', $t);
+        $t = str_replace(["\n", "\r"], '. ', $t);
+        return preg_replace('/\s+/', ' ', $t);
     }
 }

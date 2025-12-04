@@ -537,37 +537,22 @@ async function sendAudioMessage(blob) {
   }
 }
 
-// Eventos de pressionar e segurar
-micBtn.addEventListener('mousedown', (e) => {
-  e.preventDefault();
-  startRecording();
-});
-
-micBtn.addEventListener('mouseup', (e) => {
-  e.preventDefault();
-  stopRecording();
-});
-
-micBtn.addEventListener('mouseleave', (e) => {
-  e.preventDefault();
-  if (gravando) stopRecording();
-});
-
-// Touch (celular)
-micBtn.addEventListener('touchstart', (e) => {
-  e.preventDefault();
-  startRecording();
-}, { passive: false });
-
-micBtn.addEventListener('touchend', (e) => {
-  e.preventDefault();
-  stopRecording();
-}, { passive: false });
-
-micBtn.addEventListener('touchcancel', (e) => {
-  e.preventDefault();
-  if (gravando) stopRecording();
-}, { passive: false });
+// =======================
+//   EVENTOS DE ÁUDIO
+// =======================
+micBtn.addEventListener('click' , () => {
+  if (!gravando){
+    // Inicia gravação
+    startRecording();
+    micBtn.classList.add('gravando');
+    micBtn.textContent = '●';
+  } else{
+    //Para gravação
+    stopRecording();
+    micBtn.classList.remove('gravando');
+    micBtn.textContent = '🎤';
+  }
+})
 
 </script>
 </body>

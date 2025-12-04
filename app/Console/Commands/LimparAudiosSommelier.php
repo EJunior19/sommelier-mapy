@@ -12,28 +12,36 @@ class LimparAudiosSommelier extends Command
 
     public function handle()
     {
-        $dias = 2; // 🔧 QUANTOS DIAS MANTER — você pode alterar
-
-        $caminho = public_path('audio');
+        $dias = 2; // Quantidade de dias para manter
         $agora = time();
         $contador = 0;
 
-        if (!is_dir($caminho)) {
-            Log::warning("📁 Pasta de áudio não encontrada: $caminho");
-            return Command::SUCCESS;
-        }
+        // 🟣 Pastas reais onde o sistema salva os áudios
+        $pastas = [
+            storage_path('app/audio'),
+            storage_path('app/audios_temp'),
+        ];
 
-        foreach (glob($caminho . '/*.mp3') as $arquivo) {
-            $modificado = filemtime($arquivo);
-            $idadeDias = ($agora - $modificado) / 86400;
+        foreach ($pastas as $caminho) {
 
-            if ($idadeDias > $dias) {
-                unlink($arquivo);
-                $contador++;
+            if (!is_dir($caminho)) {
+                Log::warning("📁 Pasta não encontrada: $caminho");
+                continue;
+            }
+
+            // Limpa arquivos .webm e .mp3
+            foreach (glob($caminho . '/*.{webm,mp3}', GLOB_BRACE) as $arquivo) {
+                $modificado = filemtime($arquivo);
+                $idadeDias = ($agora - $modificado) / 86400;
+
+                if ($idadeDias > $dias) {
+                    unlink($arquivo);
+                    $contador++;
+                }
             }
         }
 
-        Log::info("🧹 Sommelier: $contador áudios antigos removidos da pasta /public/audio");
+        Log::info("🧹 Sommelier: $contador arquivos de áudio antigos removidos das pastas storage/app/audio e audios_temp");
 
         return Command::SUCCESS;
     }

@@ -51,6 +51,11 @@ return [
     */
 
     'channels' => [
+        'sommelier' => [
+            'driver' => 'single',
+            'path' => storage_path('logs/sommelier.log'),
+            'level' => 'debug',
+        ],
 
         'stack' => [
             'driver' => 'stack',
@@ -126,7 +131,7 @@ return [
         'emergency' => [
             'path' => storage_path('logs/laravel.log'),
         ],
-
+    
     ],
 
 ];

@@ -69,59 +69,59 @@ return new class extends Migration {
 
         // 5️⃣ Cria função de normalização
         DB::unprepared(<<<'SQL'
-CREATE OR REPLACE FUNCTION normalize_bebida(p_nome text)
-RETURNS TABLE(tipo text, marca text, volume_ml int, nome_limpo text)
-LANGUAGE plpgsql AS
-$$
-DECLARE
-  nome_raw   text := trim(p_nome);
-  nome_base  text := lower(unaccent(nome_raw));
-  v_ml       int;
-  v_tipo     text;
-  v_marca    text;
-  v_nome     text;
-  v_num      text;
-BEGIN
-  IF nome_raw IS NULL OR nome_raw = '' THEN RETURN; END IF;
+      CREATE OR REPLACE FUNCTION normalize_bebida(p_nome text)
+      RETURNS TABLE(tipo text, marca text, volume_ml int, nome_limpo text)
+      LANGUAGE plpgsql AS
+      $$
+      DECLARE
+        nome_raw   text := trim(p_nome);
+        nome_base  text := lower(unaccent(nome_raw));
+        v_ml       int;
+        v_tipo     text;
+        v_marca    text;
+        v_nome     text;
+        v_num      text;
+      BEGIN
+        IF nome_raw IS NULL OR nome_raw = '' THEN RETURN; END IF;
 
-  v_ml := NULL;
+        v_ml := NULL;
 
-  -- caso 750ML
-  IF nome_base ~ '(\d{2,4})\s*ml' THEN
-    v_ml := (regexp_match(nome_base, '(\d{2,4})\s*ml'))[1]::int;
-  END IF;
+        -- caso 750ML
+        IF nome_base ~ '(\d{2,4})\s*ml' THEN
+          v_ml := (regexp_match(nome_base, '(\d{2,4})\s*ml'))[1]::int;
+        END IF;
 
-  -- caso 1L / 4,5L / 0.7L
-  IF v_ml IS NULL AND nome_base ~ '(\d+(?:[.,]\d+)?)\s*l(?![a-z])' THEN
-    v_num := (regexp_match(nome_base, '(\d+(?:[.,]\d+)?)\s*l(?![a-z])'))[1];
-    v_num := replace(v_num, ',', '.');  -- ← 🔧 aqui converte vírgula em ponto
-    v_ml := round((v_num::numeric * 1000))::int;
-  END IF;
+        -- caso 1L / 4,5L / 0.7L
+        IF v_ml IS NULL AND nome_base ~ '(\d+(?:[.,]\d+)?)\s*l(?![a-z])' THEN
+          v_num := (regexp_match(nome_base, '(\d+(?:[.,]\d+)?)\s*l(?![a-z])'))[1];
+          v_num := replace(v_num, ',', '.');  -- ← 🔧 aqui converte vírgula em ponto
+          v_ml := round((v_num::numeric * 1000))::int;
+        END IF;
 
-  SELECT tk.tipo INTO v_tipo
-  FROM sommelier_tipo_keywords tk
-  WHERE nome_base LIKE '%'||tk.keyword||'%'
-  ORDER BY CASE WHEN tk.tipo='espumante' THEN 0 ELSE 1 END, length(tk.keyword) DESC
-  LIMIT 1;
+        SELECT tk.tipo INTO v_tipo
+        FROM sommelier_tipo_keywords tk
+        WHERE nome_base LIKE '%'||tk.keyword||'%'
+        ORDER BY CASE WHEN tk.tipo='espumante' THEN 0 ELSE 1 END, length(tk.keyword) DESC
+        LIMIT 1;
 
-  SELECT ba.marca INTO v_marca
-  FROM sommelier_brand_aliases ba
-  WHERE nome_base LIKE '%'||ba.alias||'%'
-  ORDER BY length(ba.alias) DESC LIMIT 1;
+        SELECT ba.marca INTO v_marca
+        FROM sommelier_brand_aliases ba
+        WHERE nome_base LIKE '%'||ba.alias||'%'
+        ORDER BY length(ba.alias) DESC LIMIT 1;
 
-  IF v_marca IS NULL THEN
-    v_marca := initcap(trim(regexp_replace(nome_raw,
-      '(?i)\b(vinho|vino|espumante|champ|cerveja|beer|whisky|vodka|gin|rum|tequila|licor|brandy)\b.*$','')));
-    IF v_marca = '' THEN v_marca := NULL; END IF;
-  END IF;
+        IF v_marca IS NULL THEN
+          v_marca := initcap(trim(regexp_replace(nome_raw,
+            '(?i)\b(vinho|vino|espumante|champ|cerveja|beer|whisky|vodka|gin|rum|tequila|licor|brandy)\b.*$','')));
+          IF v_marca = '' THEN v_marca := NULL; END IF;
+        END IF;
 
-  v_nome := initcap(trim(regexp_replace(nome_raw, '\s+', ' ', 'g')));
-  v_nome := regexp_replace(v_nome, '(\d{2,4})\s*(ML|Ml|ml)', '\1 ml', 'g');
+        v_nome := initcap(trim(regexp_replace(nome_raw, '\s+', ' ', 'g')));
+        v_nome := regexp_replace(v_nome, '(\d{2,4})\s*(ML|Ml|ml)', '\1 ml', 'g');
 
-  RETURN QUERY SELECT v_tipo, v_marca, v_ml, v_nome;
-END;
-$$;
-SQL);
+        RETURN QUERY SELECT v_tipo, v_marca, v_ml, v_nome;
+      END;
+      $$;
+      SQL);
 
 
         // 6️⃣ Trigger automática
