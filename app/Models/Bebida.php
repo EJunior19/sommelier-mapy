@@ -2,40 +2,45 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
 class Bebida extends Model
 {
-    use HasFactory;
-
-    // Nombre de la tabla (opcional si coincide con plural del modelo)
+    // Tabla
     protected $table = 'bebidas';
 
-    // Campos que pueden asignarse masivamente
+    // NO hay timestamps en la tabla
+    public $timestamps = false;
+
+    // Campos reales de la BD
     protected $fillable = [
         'nombre',
+        'nome_limpo',
         'tipo',
         'precio',
         'stock',
-        'alcohol',
-        'codigo_barras'
+        'marca',
+        'marca_normalizada',
+        'volume_ml',
+        'pais_origem',
+        'procedencia',
+        'busca_composta',
     ];
 
-    // Habilitar timestamps automáticos (ya los tienes en tu BD)
-    public $timestamps = true;
-
-    // Conversión de tipos automática (casts)
+    // Casts correctos
     protected $casts = [
-        'precio' => 'float',
-        'stock' => 'float',
-        'alcohol' => 'boolean',
+        'precio'   => 'float',
+        'stock'    => 'int',
+        'volume_ml'=> 'int',
     ];
 
-    // dentro de App\Models\Bebida.php
-public function scopeSearch($query, $texto)
-{
-    return $query->whereRaw('nombre ILIKE ?', ["%{$texto}%"]);
+    /**
+     * -----------------------------------------
+     * 🔎 BUSCA RÁPIDA (usa índice GIN)
+     * -----------------------------------------
+     */
+    public function scopeSearch($query, string $texto)
+    {
+        return $query->where('busca_composta', 'ILIKE', "%{$texto}%");
+    }
 }
-}
-

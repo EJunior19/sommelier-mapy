@@ -361,8 +361,9 @@ async function sendMessage(message) {
   micBtn.style.opacity = '0.6';
 
   try {
-    const res = await fetch('/responder', {
+    const res = await fetch('{{ route("asistente.responder") }}', {
       method: 'POST',
+      credentials: 'same-origin',
       headers: {
         'Content-Type': 'application/json',
         'X-CSRF-TOKEN': csrf
@@ -503,8 +504,9 @@ async function sendAudioMessage(blob) {
   formData.append('audio', blob, 'voz.webm');
 
   try {
-    const res = await fetch('/responder', {
+    const res = await fetch('{{ route("asistente.responder") }}', {
       method: 'POST',
+      credentials: 'same-origin',
       headers: {
         'X-CSRF-TOKEN': csrf
       },
