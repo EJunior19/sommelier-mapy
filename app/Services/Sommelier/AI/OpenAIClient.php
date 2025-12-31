@@ -17,7 +17,7 @@ class OpenAIClient
 
     /**
      * ---------------------------------------------
-     * 🧠 Texto (Chat Completion)
+     * 🧠 Texto (Chat conversacional)
      * ---------------------------------------------
      */
     public function chat(string $prompt): ?string
@@ -39,7 +39,43 @@ class OpenAIClient
             return null;
         }
 
-        return $response->json('choices.0.message.content');
+        return trim($response->json('choices.0.message.content'));
+    }
+
+    /**
+     * ---------------------------------------------
+     * 🧠 Texto estruturado (USO INTERNO / CACHE)
+     * ---------------------------------------------
+     * ⚠️ NÃO usar para responder ao usuário
+     * ⚠️ Apenas para salvar dados confiáveis
+     */
+    public function structured(string $prompt): ?string
+    {
+        SommelierLog::info("🧱 [OpenAIClient] Structured request");
+
+        $response = Http::withToken($this->apiKey)
+            ->post("{$this->baseUrl}/chat/completions", [
+                'model' => 'gpt-4o-mini',
+                'messages' => [
+                    [
+                        'role' => 'system',
+                        'content' => 'Você responde SOMENTE dados estruturados. Não explique.'
+                    ],
+                    [
+                        'role' => 'user',
+                        'content' => $prompt
+                    ],
+                ],
+                'temperature' => 0,      // 🔒 ZERO criatividade
+                'max_tokens'  => 120,    // resposta curta
+            ]);
+
+        if (!$response->successful()) {
+            SommelierLog::error("❌ OpenAI structured erro", $response->json());
+            return null;
+        }
+
+        return trim($response->json('choices.0.message.content'));
     }
 
     /**
@@ -91,6 +127,6 @@ class OpenAIClient
             return null;
         }
 
-        return $response->json('text');
+        return trim($response->json('text'));
     }
 }

@@ -14,23 +14,31 @@ class RegraProcedencia
      */
     public static function aplicar(array $intencoes): ?string
     {
+        /**
+         * 🔒 Só entra se a pergunta for EXPLICITAMENTE de procedência
+         */
         if (($intencoes['perguntaEspecifica'] ?? null) !== 'procedencia') {
+            return null;
+        }
+
+        /**
+         * 🛑 Se for pergunta conceitual, não resolver procedência
+         * (ex: "o que é um vinho pinot noir?")
+         */
+        if (!empty($intencoes['bloquearEnriquecimento'])) {
+            SommelierLog::info("⛔ [RegraProcedencia] Bloqueada por pergunta conceitual");
             return null;
         }
 
         SommelierLog::info("🌎 [RegraProcedencia] Pergunta de procedência detectada");
 
-        if (!empty($intencoes['produtoDetectado'])) {
-            SommelierLog::info("🌍 [RegraProcedencia] Produto detectado", [
-                'produto' => $intencoes['produtoDetectado']['nome_limpo'] ?? null
-            ]);
+        if (empty($intencoes['produtoDetectado'])) {
+            SommelierLog::warning("⚠️ [RegraProcedencia] Produto não identificado pelo NLP");
 
-            return self::responderProduto($intencoes['produtoDetectado']);
+            return "Para qual bebida você gostaria de saber a procedência? 🍷";
         }
 
-        SommelierLog::warning("⚠️ [RegraProcedencia] Produto não identificado pelo NLP");
-
-        return "Para qual bebida você gostaria de saber a procedência? 🍷";
+        return self::responderProduto($intencoes['produtoDetectado']);
     }
 
     /**
@@ -50,34 +58,48 @@ class RegraProcedencia
         $nome = mb_convert_case($nome, MB_CASE_TITLE, 'UTF-8');
 
         /**
-         * ✅ Caso 1 — já existe procedência
+         * ✅ Caso 1 — procedência já conhecida (base local / banco)
          */
         if ($pais !== '') {
-            return "{$nome} é de origem {$pais} 🌎🍷";
+            SommelierLog::info("✅ [RegraProcedencia] Procedência encontrada localmente", [
+                'produto' => $nome,
+                'pais'    => $pais,
+            ]);
+
+            return "{$nome} é de origem {$pais} 🌍🍷";
         }
 
         /**
-         * 🌐 Caso 2 — buscar via IA
+         * 🌐 Caso 2 — buscar externamente (OpenAI / fonte confiável)
          */
-        SommelierLog::info("🌐 [RegraProcedencia] Procedência não encontrada, consultando IA", [
+        SommelierLog::info("🌐 [RegraProcedencia] Procedência não encontrada localmente, consultando fonte externa", [
             'produto' => $nome
         ]);
 
         $dados = ProcedenciaResolver::resolver($produto);
 
+        /**
+         * 🧠 Validação defensiva da resposta
+         */
         if (
             is_array($dados)
             && !empty($dados['pais_origem'])
             && is_string($dados['pais_origem'])
             && mb_strlen($dados['pais_origem']) <= 40
         ) {
-            return "{$nome} é de origem {$dados['pais_origem']} 🌎🍷";
+            SommelierLog::info("💾 [RegraProcedencia] Procedência confirmada e validada", [
+                'produto' => $nome,
+                'pais'    => $dados['pais_origem'],
+                'fonte'   => $dados['fonte'] ?? 'desconhecida',
+            ]);
+
+            return "{$nome} é de origem {$dados['pais_origem']} 🌍🍷";
         }
 
         /**
-         * ❌ Caso 3 — falhou
+         * ❌ Caso 3 — falha honesta (sem inventar)
          */
-        SommelierLog::warning("❌ [RegraProcedencia] Não foi possível confirmar procedência", [
+        SommelierLog::warning("❌ [RegraProcedencia] Procedência não confirmada", [
             'produto' => $nome
         ]);
 

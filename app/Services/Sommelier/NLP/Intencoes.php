@@ -5,6 +5,8 @@ namespace App\Services\Sommelier\NLP;
 use App\Services\Sommelier\Domain\CategoriaMap;
 use App\Services\Sommelier\Search\Buscador;
 use App\Services\Sommelier\Support\Normalizador;
+use App\Services\Sommelier\Memory\MemoriaContextualCurta;
+use App\Helpers\SommelierLog;
 
 class Intencoes
 {
@@ -55,18 +57,21 @@ class Intencoes
         $t = self::normalizarSTT($t);
 
         // ===============================
-        // ❓ PERGUNTA ABSTRATA (INTERROMPE FLUXO)
+        // ❓ PERGUNTA ABSTRATA (INTERROMPE)
         // ===============================
         if (self::ehPerguntaAbstrata($t)) {
             $i->perguntaEspecifica = 'abstrata';
-            $i->categoria = CategoriaMap::detectar($t); // opcional, só informativo
+            $i->categoria = CategoriaMap::detectar($t);
             return $i;
         }
 
         // ===============================
         // ❓ PROCEDÊNCIA
         // ===============================
-        if (preg_match('/\b(procedenc|procedência|origem|origen|de onde (vem|é)|pais de origem|país de origem)\b/i', $t)) {
+        if (preg_match(
+            '/\b(procedenc|procedência|origem|origen|de onde (vem|é)|pais de origem|país de origem)\b/i',
+            $t
+        )) {
             $i->perguntaEspecifica = 'procedencia';
         }
 
@@ -112,10 +117,29 @@ class Intencoes
         // ===============================
         [$i->minMl, $i->maxMl] = self::extrairFaixaVolumeMl($t);
 
-        // ===============================
-        // 🧠 PRODUTO DIRETO
-        // ===============================
-        if ($i->perguntaEspecifica === 'procedencia' || !$i->temFiltro()) {
+        // ==================================================
+        // ♻️ HERANÇA DE CONTEXTO (PREÇO SEM CATEGORIA)
+        // ==================================================
+        if (
+            ($i->precoMin !== null || $i->precoMax !== null)
+            && $i->categoria === null
+        ) {
+            $contexto = MemoriaContextualCurta::recuperar();
+
+            if (!empty($contexto['categoria'])) {
+                $i->categoria = $contexto['categoria'];
+
+                SommelierLog::info(
+                    "♻️ [NLP] Categoria herdada do contexto",
+                    ['categoria' => $i->categoria]
+                );
+            }
+        }
+
+        // ==================================================
+        // 🧠 PRODUTO DIRETO (SÓ SE PERGUNTA EXPLÍCITA)
+        // ==================================================
+        if ($i->perguntaEspecifica === 'procedencia') {
             $produto = Buscador::buscarProdutoPorTexto($textoOriginal);
             if ($produto) {
                 $i->produtoDetectado = [
@@ -129,11 +153,15 @@ class Intencoes
         return $i;
     }
 
+    /**
+     * --------------------------------------------------
+     * 🎯 Filtro básico (compatibilidade antiga)
+     * --------------------------------------------------
+     */
     public function temFiltro(): bool
     {
         return (bool) (
             $this->categoria ||
-            $this->marca ||
             $this->sensorial ||
             $this->ocasiao ||
             $this->precoMin !== null ||
@@ -143,23 +171,65 @@ class Intencoes
         );
     }
 
+    /**
+     * --------------------------------------------------
+     * 🎯 Filtro SUFICIENTE para RECOMENDAR
+     * --------------------------------------------------
+     * Evita chutes e força interação humana
+     */
+    public function temFiltroSuficiente(): bool
+    {
+        // precisa ter categoria
+        if (!$this->categoria) {
+            return false;
+        }
+
+        // categoria + qualquer refinamento
+        if (
+            $this->sensorial ||
+            $this->ocasiao ||
+            $this->precoMin !== null ||
+            $this->precoMax !== null ||
+            $this->minMl !== null ||
+            $this->maxMl !== null
+        ) {
+            return true;
+        }
+
+        return false;
+    }
+
     // ==================================================
     // 🔧 HELPERS
     // ==================================================
 
     protected static function ehPerguntaAbstrata(string $t): bool
     {
-        $gatilhos = [
+        $gatilhosFortes = [
             '/\b(qual|cu[aá]l)\s+o\s+melhor\b/i',
             '/\b(quem|qu[ií]en)\s+(criou|inventou)\b/i',
             '/\b(hist[oó]ria|origem\s+do)\b/i',
             '/\b(explica|explique|me\s+conta)\b/i',
+            '/\b(processo\s+de\s+fabric)/i',
         ];
 
-        foreach ($gatilhos as $rx) {
+        foreach ($gatilhosFortes as $rx) {
             if (preg_match($rx, $t)) {
                 return true;
             }
+        }
+
+        if (
+            str_contains($t, 'como') &&
+            (
+                str_contains($t, 'feito') ||
+                str_contains($t, 'fabric') ||
+                str_contains($t, 'produz') ||
+                str_contains($t, 'funcion') ||
+                str_contains($t, 'process')
+            )
+        ) {
+            return true;
         }
 
         return false;
@@ -178,6 +248,7 @@ class Intencoes
 
         $t = str_replace(array_keys($map), array_values($map), $t);
         $t = preg_replace('/[^\p{L}\p{N}\s\.,\$]/u', ' ', $t);
+
         return trim(preg_replace('/\s+/', ' ', $t));
     }
 

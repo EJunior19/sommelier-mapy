@@ -20,8 +20,25 @@ class ProcedenciaResolver
      */
     public static function resolver(array $produto): ?array
     {
-        if (empty($produto['id']) || empty($produto['nome_limpo'])) {
+        // 🛑 Validação mínima
+        if (
+            empty($produto['id']) ||
+            empty($produto['nome_limpo'])
+        ) {
             return null;
+        }
+
+        // 🛑 Se já existe procedência no produto, NÃO CONSULTA IA
+        if (!empty($produto['pais_origem']) && mb_strlen($produto['pais_origem']) <= 40) {
+            SommelierLog::info("♻️ [ProcedenciaResolver] Procedência já existente no produto, pulando IA", [
+                'produto' => $produto['nome_limpo'],
+                'pais'    => $produto['pais_origem'],
+            ]);
+
+            return [
+                'pais_origem' => $produto['pais_origem'],
+                'procedencia' => $produto['procedencia'] ?? null,
+            ];
         }
 
         SommelierLog::info("🌐 [ProcedenciaResolver] Buscando procedência via OpenAI", [
@@ -31,18 +48,33 @@ class ProcedenciaResolver
         $prompt = self::montarPrompt($produto['nome_limpo']);
 
         try {
-            // ✅ Usa o client REAL do projeto
+            // ✅ Client real do projeto
             $openai = new OpenAIClient();
 
             $texto = $openai->chat($prompt);
 
-            if (!$texto) {
+            if (!is_string($texto) || trim($texto) === '') {
+                SommelierLog::warning("⚠️ [ProcedenciaResolver] OpenAI retornou vazio");
                 return null;
             }
 
             $dados = self::extrairDados($texto);
 
             if (!$dados) {
+                SommelierLog::warning("⚠️ [ProcedenciaResolver] Dados não extraídos", [
+                    'texto' => $texto
+                ]);
+                return null;
+            }
+
+            /**
+             * 🛑 Segurança final — evita lixo no banco
+             */
+            if (
+                empty($dados['pais_origem']) ||
+                mb_strlen($dados['pais_origem']) > 40 ||
+                mb_strtolower($dados['pais_origem']) === 'desconhecido'
+            ) {
                 return null;
             }
 
@@ -54,14 +86,19 @@ class ProcedenciaResolver
                     'procedencia' => $dados['procedencia'],
                 ]);
 
-            SommelierLog::info("💾 [ProcedenciaResolver] Procedência salva no banco", $dados);
+            SommelierLog::info("💾 [ProcedenciaResolver] Procedência salva no banco", [
+                'produto' => $produto['nome_limpo'],
+                'pais'    => $dados['pais_origem'],
+            ]);
 
             return $dados;
 
         } catch (\Throwable $e) {
             SommelierLog::error("❌ [ProcedenciaResolver] Erro ao buscar procedência", [
-                'erro' => $e->getMessage()
+                'produto' => $produto['nome_limpo'],
+                'erro'    => $e->getMessage()
             ]);
+
             return null;
         }
     }
@@ -76,7 +113,7 @@ class ProcedenciaResolver
         return <<<PROMPT
 Você é um especialista em vinhos e bebidas alcoólicas.
 
-Informe a procedência do produto abaixo.
+Informe a procedência REAL do produto abaixo.
 
 Produto: "{$nomeProduto}"
 
@@ -85,7 +122,8 @@ Responda APENAS no formato abaixo (não escreva mais nada):
 PAIS: <nome do país>
 RESUMO: <resumo curto da procedência em uma frase>
 
-Se não tiver certeza absoluta, responda exatamente:
+REGRAS:
+- Se não tiver certeza absoluta, responda exatamente:
 PAIS: desconhecido
 RESUMO: procedência não confirmada
 PROMPT;

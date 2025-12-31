@@ -31,35 +31,43 @@ class Buscador
             ->limit(6)
             ->get();
 
-        if ($res->isEmpty()) {
-            SommelierLog::info("📦 [Search] Nenhum resultado direto");
-            return [];
-        }
-
-        return self::formatarResultado($res);
+        return $res->isEmpty()
+            ? []
+            : self::formatarResultado($res);
     }
 
     /**
      * ==================================================
-     * 🎯 BUSCA POR INTENÇÕES (INTELIGENTE)
+     * 🎯 BUSCA POR INTENÇÕES (CONTROLADA)
      * ==================================================
      */
     public static function buscarPorIntencoes(
         Intencoes $i,
         string $textoOriginal
     ): array {
+
+        if (!self::intencaoMinimaValida($i)) {
+            SommelierLog::info("⛔ [Search] Intenção insuficiente para busca", [
+                'categoria' => $i->categoria,
+                'sensorial' => $i->sensorial,
+                'precoMin'  => $i->precoMin,
+                'precoMax'  => $i->precoMax,
+            ]);
+            return [];
+        }
+
         SommelierLog::info("🎯 [Search] Busca por intenções", [
             'categoria' => $i->categoria,
+            'sensorial' => $i->sensorial,
             'precoMin'  => $i->precoMin,
             'precoMax'  => $i->precoMax,
-            'sensorial' => $i->sensorial,
         ]);
 
         $q = DB::table('bebidas')
             ->where('stock', '>', 0);
 
         // ===============================
-        // 🎯 FILTROS
+        // 🎯 FILTROS DUROS
         // ===============================
         if ($i->categoria) {
             $q->where('tipo', $i->categoria);
@@ -73,26 +81,33 @@ class Buscador
             $q->where('precio', '<=', $i->precoMax);
         }
 
+        // ===============================
+        // 👅 SENSORIAL (PESO LEVE)
+        // ===============================
         if ($i->sensorial) {
-            $q->where('busca_composta', 'ILIKE', '%' . $i->sensorial . '%');
+            $q->orderByRaw(
+                "CASE WHEN busca_composta ILIKE ? THEN 0 ELSE 1 END",
+                ['%' . $i->sensorial . '%']
+            );
         }
 
         // ===============================
-        // 📊 ORDENAR COM BOM SENSO
+        // 📘 TEXTO RELEVANTE (SÓ SE NÃO FOR VAGO)
         // ===============================
-        // 1️⃣ Relevância por texto
-        // 2️⃣ Preço crescente (UX)
-        $q->orderByRaw("
-            CASE 
-                WHEN busca_composta ILIKE ? THEN 1
-                ELSE 2
-            END
-        ", ['%' . $textoOriginal . '%']);
+        $textoRelevante = Normalizador::textoLimpo($textoOriginal);
 
+        if ($textoRelevante !== '' && mb_strlen($textoRelevante) >= 4) {
+            $q->orderByRaw(
+                "CASE WHEN busca_composta ILIKE ? THEN 0 ELSE 1 END",
+                ['%' . $textoRelevante . '%']
+            );
+        }
+
+        // UX: preço crescente
         $q->orderBy('precio', 'asc');
 
         // ===============================
-        // 🔍 BUSCAR MAIS DO QUE MOSTRAR
+        // 🔍 BUSCA AMPLA
         // ===============================
         $res = $q->limit(30)->get();
 
@@ -102,7 +117,7 @@ class Buscador
         }
 
         // ===============================
-        // 🔄 ROTAÇÃO INTELIGENTE POR CONTEXTO
+        // 🔄 ROTAÇÃO DE RESULTADOS
         // ===============================
         $chaveSessao = self::chaveRotacao($i);
         $jaMostrados = session($chaveSessao, []);
@@ -111,22 +126,15 @@ class Buscador
             ->reject(fn ($b) => in_array($b->id, $jaMostrados))
             ->take(6);
 
-        // ===============================
-        // ♻️ FALLBACK SE ESGOTOU VARIEDADE
-        // ===============================
         if ($items->count() < 3) {
             SommelierLog::info("♻️ [Search] Resetando rotação", [
                 'chave' => $chaveSessao
             ]);
 
             session()->forget($chaveSessao);
-
             $items = $res->take(6);
         }
 
-        // ===============================
-        // 💾 SALVAR MEMÓRIA
-        // ===============================
         session([
             $chaveSessao => array_merge(
                 $jaMostrados,
@@ -180,7 +188,22 @@ class Buscador
 
     /**
      * ==================================================
-     * 🔑 CHAVE DE ROTAÇÃO POR CONTEXTO
+     * 🧠 VALIDA SE A INTENÇÃO É BUSCÁVEL
+     * ==================================================
+     */
+    protected static function intencaoMinimaValida(Intencoes $i): bool
+    {
+        // Categoria + refinamento humano
+        if ($i->categoria && ($i->sensorial || $i->precoMin !== null || $i->precoMax !== null)) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * ==================================================
+     * 🔑 CHAVE DE ROTAÇÃO
      * ==================================================
      */
     protected static function chaveRotacao(Intencoes $i): string

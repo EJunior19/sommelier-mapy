@@ -1,0 +1,105 @@
+<?php
+
+namespace App\Services\Sommelier\Rules;
+
+use App\Helpers\SommelierLog;
+
+class RegraPerguntaCulturalEvento
+{
+    /**
+     * Detecta perguntas culturais ou tradicionais ligadas a eventos
+     */
+    public static function match(string $mensagem, ?string $ocasiao): bool
+    {
+        if (!$ocasiao) {
+            return false;
+        }
+
+        $msg = mb_strtolower($mensagem, 'UTF-8');
+
+        return (bool) preg_match(
+            '/\b(que|qual|quais|o que)\b.*\b(bebida|bebidas|se bebe|costuma|geralmente|tradicional|normalmente|mais comum)\b/',
+            $msg
+        );
+    }
+
+    /**
+     * Resposta cultural por evento
+     */
+    public static function responder(string $ocasiao): string
+    {
+        SommelierLog::info("🎓 [RegraPerguntaCulturalEvento] Respondendo pergunta cultural", [
+            'ocasiao' => $ocasiao
+        ]);
+
+        switch ($ocasiao) {
+
+            // 🎆 GRANDES DATAS
+            case 'reveillon':
+            case 'ano novo':
+                return
+                    "No Ano Novo, o mais tradicional é brindar com espumante ou champanhe 🍾, simbolizando renovação e bons desejos. " .
+                    "Durante a festa, cervejas leves são muito consumidas, e vinhos brancos ou rosés costumam acompanhar a ceia. " .
+                    "Tudo depende se o foco é o brinde, a refeição ou a festa.";
+
+            case 'natal':
+                return
+                    "No Natal, as bebidas costumam acompanhar a ceia. Vinhos tintos são comuns com carnes mais intensas, " .
+                    "enquanto vinhos brancos combinam bem com aves e peixes. Espumantes também aparecem bastante para celebrar.";
+
+            case 'pascoa':
+                return
+                    "Na Páscoa, é comum optar por vinhos brancos, rosés ou tintos mais leves, especialmente para acompanhar peixes e pratos mais delicados.";
+
+            // 🎉 EVENTOS SOCIAIS
+            case 'aniversario':
+                return
+                    "Em aniversários, o consumo costuma variar bastante. Cervejas são as mais comuns em festas informais, " .
+                    "enquanto espumantes, vinhos e alguns destilados aparecem mais em comemorações à noite.";
+
+            case 'casamento':
+                return
+                    "Em casamentos, o espumante é tradicional para o brinde. Durante a recepção, vinhos costumam acompanhar as refeições, " .
+                    "e em festas mais longas, cervejas e drinks também são bastante servidos.";
+
+            case 'formatura':
+                return
+                    "Em formaturas, o espumante é quase obrigatório no brinde. Depois disso, cervejas e destilados aparecem bastante na comemoração.";
+
+            // 🍖 EVENTOS GASTRONÔMICOS
+            case 'churrasco':
+                return
+                    "No churrasco, a bebida mais comum é a cerveja, especialmente as mais leves e refrescantes. " .
+                    "Vinhos tintos jovens também podem aparecer, principalmente para quem prefere algo diferente.";
+
+            case 'jantar':
+                return
+                    "Em jantares, a escolha da bebida costuma acompanhar o prato principal. " .
+                    "Vinhos são os mais comuns, variando entre brancos, tintos ou rosés conforme a refeição.";
+
+            // 🏖️ EVENTOS SAZONAIS
+            case 'verao':
+            case 'verão':
+                return
+                    "No verão, as bebidas mais consumidas costumam ser cervejas leves, espumantes, vinhos brancos e rosés, " .
+                    "sempre priorizando algo mais refrescante.";
+
+            case 'inverno':
+                return
+                    "No inverno, bebidas mais encorpadas ganham espaço, como vinhos tintos, destilados e bebidas que trazem sensação de aquecimento.";
+
+            // 🏟️ EVENTOS COLETIVOS
+            case 'confraternizacao':
+            case 'confraternização':
+                return
+                    "Em confraternizações, o consumo costuma ser bem variado. Cervejas agradam a maioria, " .
+                    "vinhos aparecem em refeições e destilados ficam para momentos mais descontraídos.";
+
+            // 🔁 GENÉRICO
+            default:
+                return
+                    "Em eventos como esse, as bebidas mais comuns costumam variar entre cervejas, vinhos e espumantes, " .
+                    "dependendo do horário, do perfil dos convidados e do tipo de comemoração.";
+        }
+    }
+}
